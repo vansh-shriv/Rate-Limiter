@@ -9,6 +9,12 @@ and a **Prometheus + Grafana metrics dashboard**.
 ## Stack
 Go 1.24 · Redis 7 · Prometheus · Grafana · Docker Compose · k6 / vegeta (load testing)
 
+## Quick start
+```
+docker compose up -d --build
+curl localhost:8080/readyz
+```
+
 ## Status
 See [docs/ROADMAP.md](docs/ROADMAP.md) for phase-by-phase progress.
 

@@ -4,8 +4,8 @@ Status: ⬜ not started · 🟨 in progress · ✅ done (committed)
 
 | # | Phase | Key deliverables | Status |
 |---|-------|------------------|--------|
-| 0 | Planning & scaffold | Repo structure, docs, ADRs, architecture | 🟨 |
-| 1 | Go project + config + Redis plumbing | go.mod, config loader, Redis client, docker-compose (Redis), health endpoint | ⬜ |
+| 0 | Planning & scaffold | Repo structure, docs, ADRs, architecture | ✅ |
+| 1 | Go project + config + Redis plumbing | go.mod, config loader, Redis client, docker-compose (Redis), health endpoint | 🟨 |
 | 2 | Token bucket (Lua) | Atomic Lua script, Go wrapper, unit + concurrency tests | ⬜ |
 | 3 | Sliding window (Lua) | Sliding-window-log/counter script, tests | ⬜ |
 | 4 | Leaky bucket (Lua) | Script, tests, shared `Limiter` interface | ⬜ |
