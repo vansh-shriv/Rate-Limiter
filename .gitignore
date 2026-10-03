@@ -1,0 +1,15 @@
+# Go
+/bin/
+*.exe
+*.test
+*.out
+coverage.*
+# Env / local
+.env
+*.local
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+# Load test output
+loadtest/results/
