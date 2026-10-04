@@ -10,30 +10,35 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"ratelimiter/internal/admin"
 	"ratelimiter/internal/auth"
 	"ratelimiter/internal/config"
 	"ratelimiter/internal/decision"
 	"ratelimiter/internal/limiter"
+	"ratelimiter/internal/metrics"
 	"ratelimiter/internal/server"
 	"ratelimiter/internal/store"
 	"ratelimiter/internal/tenant"
 )
 
+var version = "dev" // overridden with -ldflags "-X main.version=..."
+
 func main() {
-	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-	if err := run(log); err != nil {
+	cfg, err := config.Load()
+	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.LogLevel}))
+	if err == nil {
+		err = run(log, cfg)
+	}
+	if err != nil {
 		log.Error("fatal", "err", err)
 		os.Exit(1)
 	}
 }
 
-func run(log *slog.Logger) error {
-	cfg, err := config.Load()
-	if err != nil {
-		return err
-	}
+func run(log *slog.Logger, cfg config.Config) error {
+	var err error
 	var upstream *url.URL
 	if cfg.UpstreamURL != "" {
 		if upstream, err = url.Parse(cfg.UpstreamURL); err != nil || upstream.Host == "" {
@@ -51,8 +56,10 @@ func run(log *slog.Logger) error {
 	defer rdb.Close()
 	log.Info("redis connected", "addr", cfg.RedisAddr, "pool", cfg.RedisPoolSize)
 
+	m := metrics.New(cfg.MetricsPerTenant, version)
 	tstore := tenant.NewStore(rdb)
 	provider := tenant.NewProvider(rdb, tstore, cfg.DefaultRule, cfg.TenantCacheTTL, log)
+	provider.ObserveCache(m.ObserveCache)
 	go provider.Watch(ctx) // hot reload: apply config changes made on any instance
 
 	var identifier auth.Identifier = provider
@@ -70,15 +77,32 @@ func run(log *slog.Logger) error {
 	srv := server.New(server.Deps{
 		Addr:       cfg.HTTPAddr,
 		Ready:      func(ctx context.Context) error { return rdb.Ping(ctx).Err() },
-		Checker:    decision.Checker{Limiter: limiter.NewRouter(rdb), Rules: provider},
+		Checker:    decision.Checker{Limiter: limiter.NewRouter(rdb), Rules: provider, Observer: m},
 		Identifier: identifier,
 		Admin:      adminHandler,
 		Upstream:   upstream,
 		FailOpen:   cfg.FailOpen,
 		Log:        log,
+		Metrics:    m,
 	})
 
-	errCh := make(chan error, 1)
+	// /metrics lives on its own listener so it is never exposed on the public/gateway port.
+	var msrv *http.Server
+	if cfg.MetricsAddr != "" {
+		mux := http.NewServeMux()
+		mux.Handle("GET /metrics", m.Handler())
+		msrv = &http.Server{Addr: cfg.MetricsAddr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	}
+
+	errCh := make(chan error, 2)
+	if msrv != nil {
+		go func() {
+			log.Info("metrics listening", "addr", cfg.MetricsAddr)
+			if err := msrv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+				errCh <- err
+			}
+		}()
+	}
 	go func() {
 		log.Info("http listening", "addr", cfg.HTTPAddr, "upstream", cfg.UpstreamURL,
 			"default_rule", cfg.DefaultRule.Algorithm, "limit", cfg.DefaultRule.Limit, "window", cfg.DefaultRule.Window)
@@ -95,5 +119,8 @@ func run(log *slog.Logger) error {
 	}
 	sctx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 	defer cancel()
+	if msrv != nil {
+		_ = msrv.Shutdown(sctx)
+	}
 	return srv.Shutdown(sctx)
 }

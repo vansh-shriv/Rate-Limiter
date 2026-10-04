@@ -103,3 +103,20 @@ func TestCacheIsBounded(t *testing.T) {
 		t.Fatalf("cache grew to %d entries", n)
 	}
 }
+
+func TestCacheObserver(t *testing.T) {
+	c := newTTLCache[int](time.Minute)
+	got := map[string]int{}
+	c.observe = func(r string) { got[r]++ }
+	ok := func(context.Context) (int, error) { return 1, nil }
+	c.get(context.Background(), "a", ok) // miss
+	c.get(context.Background(), "a", ok) // hit
+	c.get(context.Background(), "ghost", func(context.Context) (int, error) { return 0, rules.ErrNotFound })
+	c.get(context.Background(), "boom", func(context.Context) (int, error) { return 0, errors.New("redis") })
+	want := map[string]int{"miss": 1, "hit": 1, "not_found": 1, "error": 1}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("%s = %d, want %d (all: %v)", k, got[k], v, got)
+		}
+	}
+}

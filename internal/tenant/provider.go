@@ -74,6 +74,12 @@ func (p *Provider) Identify(r *http.Request) (auth.Identity, error) {
 	return auth.Identity{Tenant: tenantID, Subject: "key:" + auth.KeyID(hash)}, nil
 }
 
+// ObserveCache reports cache outcomes (cache = "tenant" | "apikey"). Call before serving traffic.
+func (p *Provider) ObserveCache(f func(cache, result string)) {
+	p.tenants.observe = func(r string) { f("tenant", r) }
+	p.keys.observe = func(r string) { f("apikey", r) }
+}
+
 // Watch applies config changes made on any instance. It blocks until ctx is cancelled;
 // go-redis re-subscribes automatically after connection loss (changes during the gap are
 // picked up when cache entries expire).

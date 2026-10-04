@@ -35,6 +35,7 @@ type ttlCache[V any] struct {
 	negTTL  time.Duration
 	sf      singleflight.Group
 	nowFunc func() time.Time
+	observe func(result string) // optional: hit | miss | not_found | error | coalesced
 }
 
 func newTTLCache[V any](ttl time.Duration) *ttlCache[V] {
@@ -46,10 +47,11 @@ func (c *ttlCache[V]) get(ctx context.Context, key string, load func(context.Con
 	e, ok := c.m[key]
 	c.mu.RUnlock()
 	if ok && c.nowFunc().Before(e.exp) {
+		c.note("hit")
 		return e.v, e.err
 	}
 
-	res, _, _ := c.sf.Do(key, func() (any, error) {
+	res, _, shared := c.sf.Do(key, func() (any, error) {
 		// Detach from the first caller's cancellation: other callers are waiting on this result.
 		lctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), loadTimeout)
 		defer cancel()
@@ -59,14 +61,27 @@ func (c *ttlCache[V]) get(ctx context.Context, key string, load func(context.Con
 		case err == nil:
 			out.exp = c.nowFunc().Add(c.ttl)
 			c.put(key, out)
+			c.note("miss")
 		case errors.Is(err, rules.ErrNotFound):
 			out.exp = c.nowFunc().Add(c.negTTL)
 			c.put(key, out)
+			c.note("not_found")
+		default:
+			c.note("error")
 		}
 		return out, nil
 	})
+	if shared {
+		c.note("coalesced") // waited on another goroutine's load instead of hitting Redis
+	}
 	r := res.(entry[V])
 	return r.v, r.err
+}
+
+func (c *ttlCache[V]) note(result string) {
+	if c.observe != nil {
+		c.observe(result)
+	}
 }
 
 func (c *ttlCache[V]) put(key string, e entry[V]) {

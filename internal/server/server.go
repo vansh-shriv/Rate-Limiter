@@ -28,6 +28,7 @@ type Deps struct {
 	Upstream   *url.URL        // optional: when set, every other path is proxied here behind the rate limiter
 	FailOpen   bool
 	Log        *slog.Logger
+	Metrics    HTTPObserver // optional
 }
 
 func New(d Deps) *http.Server {
@@ -38,6 +39,7 @@ func New(d Deps) *http.Server {
 		d.Identifier = auth.HeaderIdentifier{}
 	}
 	mux := http.NewServeMux()
+	route := func(name string, h http.Handler) http.Handler { return instrument(name, d.Metrics, d.Log, h) }
 
 	// Operational endpoints are never rate limited.
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -54,16 +56,16 @@ func New(d Deps) *http.Server {
 	})
 
 	// Decision API: "should this request be allowed?" for callers that enforce limits themselves.
-	mux.Handle("POST /v1/check", api.CheckHandler(d.Checker, d.Identifier, d.FailOpen, d.Log))
+	mux.Handle("POST /v1/check", route("check", api.CheckHandler(d.Checker, d.Identifier, d.FailOpen, d.Log)))
 
 	if d.Admin != nil {
-		mux.Handle("/admin/", d.Admin)
+		mux.Handle("/admin/", route("admin", d.Admin))
 	}
 
 	// Gateway mode: rate-limit, then reverse-proxy to the upstream.
 	if d.Upstream != nil {
 		limit := middleware.New(middleware.Options{Checker: d.Checker, Identifier: d.Identifier, FailOpen: d.FailOpen, Log: d.Log})
-		mux.Handle("/", limit(httputil.NewSingleHostReverseProxy(d.Upstream)))
+		mux.Handle("/", route("gateway", limit(httputil.NewSingleHostReverseProxy(d.Upstream))))
 	}
 
 	return &http.Server{

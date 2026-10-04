@@ -25,6 +25,7 @@ See [docs/ROADMAP.md](docs/ROADMAP.md) for phase-by-phase progress.
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | System design and data flow |
 | [docs/DECISIONS.md](docs/DECISIONS.md) | Decision log (why Go, why Lua, etc.) |
 | [docs/API.md](docs/API.md) | HTTP API, headers, configuration reference |
+| [docs/OBSERVABILITY.md](docs/OBSERVABILITY.md) | Metrics, dashboard, logging, cardinality rules |
 | [docs/phases/](docs/phases/) | One journal per phase: every step, idea, and trade-off |
 | docs/BENCHMARKS.md | Load-test results (created in Phase 8) |
 

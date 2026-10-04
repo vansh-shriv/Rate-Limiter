@@ -3,6 +3,7 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"strconv"
 	"time"
@@ -18,6 +19,10 @@ type Config struct {
 	RedisPoolSize   int
 	RedisTimeout    time.Duration // dial/read/write timeout
 	ShutdownTimeout time.Duration
+
+	MetricsAddr      string // separate listener for /metrics ("" disables)
+	MetricsPerTenant bool   // add a tenant label to decision metrics
+	LogLevel         slog.Level
 
 	AdminToken     string        // enables the admin API when non-empty
 	AuthMode       string        // "apikey" (default, secure) or "header" (dev: trust X-Tenant-ID)
@@ -50,6 +55,16 @@ func Load() (Config, error) {
 	}
 	if c.FailOpen, err = getBool("RL_FAIL_OPEN", true); err != nil {
 		return c, err
+	}
+	c.MetricsAddr = getStr("RL_METRICS_ADDR", ":9090")
+	if v, ok := os.LookupEnv("RL_METRICS_ADDR"); ok && v == "" {
+		c.MetricsAddr = "" // explicitly empty disables
+	}
+	if c.MetricsPerTenant, err = getBool("RL_METRICS_PER_TENANT", true); err != nil {
+		return c, err
+	}
+	if err = c.LogLevel.UnmarshalText([]byte(getStr("RL_LOG_LEVEL", "info"))); err != nil {
+		return c, fmt.Errorf("config RL_LOG_LEVEL: %w", err)
 	}
 	c.AdminToken = getStr("RL_ADMIN_TOKEN", "")
 	c.AuthMode = getStr("RL_AUTH_MODE", "apikey")

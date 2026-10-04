@@ -4,6 +4,7 @@ package decision
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
@@ -17,12 +18,42 @@ type Outcome struct {
 	Result limiter.Result
 }
 
+// Result classifies a decision for metrics.
+type Result string
+
+const (
+	ResultAllowed  Result = "allowed"
+	ResultDenied   Result = "denied"
+	ResultRejected Result = "rejected" // unknown/disabled tenant or invalid rule/cost: a caller problem
+	ResultError    Result = "error"    // backend failure
+)
+
+// Observer receives one call per decision. tenant is "unknown" unless the tenant's rule resolved,
+// which keeps metric label cardinality bounded by configured tenants (never by attacker input).
+type Observer interface {
+	Observe(tenant string, algorithm limiter.Algorithm, result Result, took time.Duration)
+}
+
 type Checker struct {
-	Limiter limiter.Limiter
-	Rules   rules.Provider
+	Limiter  limiter.Limiter
+	Rules    rules.Provider
+	Observer Observer // optional
 }
 
 func (c Checker) Check(ctx context.Context, tenant, subject string, cost int64) (Outcome, error) {
+	start := time.Now()
+	out, err := c.check(ctx, tenant, subject, cost)
+	if c.Observer != nil {
+		label := "unknown"
+		if out.Rule.Algorithm != "" { // rule resolved => tenant is real
+			label = tenant
+		}
+		c.Observer.Observe(label, out.Rule.Algorithm, classify(out, err), time.Since(start))
+	}
+	return out, err
+}
+
+func (c Checker) check(ctx context.Context, tenant, subject string, cost int64) (Outcome, error) {
 	rule, err := c.Rules.Rule(ctx, tenant)
 	if err != nil {
 		return Outcome{}, err
@@ -32,6 +63,20 @@ func (c Checker) Check(ctx context.Context, tenant, subject string, cost int64) 
 		return Outcome{Rule: rule}, err
 	}
 	return Outcome{Rule: rule, Result: res}, nil
+}
+
+func classify(o Outcome, err error) Result {
+	switch {
+	case err == nil && o.Result.Allowed:
+		return ResultAllowed
+	case err == nil:
+		return ResultDenied
+	case errors.Is(err, rules.ErrNotFound), errors.Is(err, rules.ErrDisabled),
+		errors.Is(err, limiter.ErrInvalidRule), errors.Is(err, limiter.ErrCostTooHigh):
+		return ResultRejected
+	default:
+		return ResultError
+	}
 }
 
 // SetHeaders writes the conventional rate-limit headers.
