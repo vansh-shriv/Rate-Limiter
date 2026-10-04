@@ -6,11 +6,14 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/http/pprof"
 	"net/url"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/redis/go-redis/v9"
 
 	"ratelimiter/internal/admin"
 	"ratelimiter/internal/auth"
@@ -56,6 +59,13 @@ func run(log *slog.Logger, cfg config.Config) error {
 	defer rdb.Close()
 	log.Info("redis connected", "addr", cfg.RedisAddr, "pool", cfg.RedisPoolSize)
 
+	var scripter redis.Scripter = rdb
+	if cfg.BatchFlushers > 0 {
+		b := limiter.NewBatcher(rdb, cfg.BatchFlushers, cfg.BatchMax, cfg.RedisTimeout)
+		defer b.Close()
+		scripter = b
+		log.Info("redis pipelining enabled", "flushers", cfg.BatchFlushers, "max_batch", cfg.BatchMax)
+	}
 	m := metrics.New(cfg.MetricsPerTenant, version)
 	tstore := tenant.NewStore(rdb)
 	provider := tenant.NewProvider(rdb, tstore, cfg.DefaultRule, cfg.TenantCacheTTL, log)
@@ -77,7 +87,7 @@ func run(log *slog.Logger, cfg config.Config) error {
 	srv := server.New(server.Deps{
 		Addr:       cfg.HTTPAddr,
 		Ready:      func(ctx context.Context) error { return rdb.Ping(ctx).Err() },
-		Checker:    decision.Checker{Limiter: limiter.NewRouter(rdb), Rules: provider, Observer: m},
+		Checker:    decision.Checker{Limiter: limiter.NewRouter(scripter), Rules: provider, Observer: m},
 		Identifier: identifier,
 		Admin:      adminHandler,
 		Upstream:   upstream,
@@ -91,6 +101,12 @@ func run(log *slog.Logger, cfg config.Config) error {
 	if cfg.MetricsAddr != "" {
 		mux := http.NewServeMux()
 		mux.Handle("GET /metrics", m.Handler())
+		if cfg.PprofEnabled { // same private listener as /metrics; never on the public port
+			mux.HandleFunc("/debug/pprof/", pprof.Index)
+			mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+			mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+			log.Warn("pprof enabled on metrics listener", "addr", cfg.MetricsAddr)
+		}
 		msrv = &http.Server{Addr: cfg.MetricsAddr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	}
 

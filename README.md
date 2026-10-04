@@ -4,7 +4,7 @@ A drop-in API gateway / middleware offering **token bucket**, **sliding window**
 rate limiting, backed by **Redis Lua scripts** (atomic, distributed), with **per-tenant configuration**
 and a **Prometheus + Grafana metrics dashboard**.
 
-**Target:** handle **20k req/s with p99 < 5 ms** (to be measured and proven in Phase 8 — see `docs/BENCHMARKS.md`).
+**Target:** 20k req/s with p99 < 5 ms. **Measured so far:** ~10k req/s at p99 ≈ 3-4 ms (5k at ≈ 2 ms) full-stack on a shared 8-core laptop under WSL2; the 20k target was **not** met on that hardware. Methodology, caveats and how to re-measure: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
 ## Stack
 Go 1.24 · Redis 7 · Prometheus · Grafana · Docker Compose · k6 / vegeta (load testing)
@@ -27,7 +27,7 @@ See [docs/ROADMAP.md](docs/ROADMAP.md) for phase-by-phase progress.
 | [docs/API.md](docs/API.md) | HTTP API, headers, configuration reference |
 | [docs/OBSERVABILITY.md](docs/OBSERVABILITY.md) | Metrics, dashboard, logging, cardinality rules |
 | [docs/phases/](docs/phases/) | One journal per phase: every step, idea, and trade-off |
-| docs/BENCHMARKS.md | Load-test results (created in Phase 8) |
+| [docs/BENCHMARKS.md](docs/BENCHMARKS.md) | Load-test method, results, profile, what we can and cannot claim |
 
 ## Workflow
 Built phase by phase. After each phase: review → commit → push → proceed. Commit messages are listed in each phase doc.

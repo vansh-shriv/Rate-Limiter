@@ -20,7 +20,11 @@ type Config struct {
 	RedisTimeout    time.Duration // dial/read/write timeout
 	ShutdownTimeout time.Duration
 
+	BatchFlushers int // >0 (default 2) pipelines concurrent decisions to Redis (limiter.Batcher); 0 = one round trip per decision
+	BatchMax      int // max decisions per pipeline
+
 	MetricsAddr      string // separate listener for /metrics ("" disables)
+	PprofEnabled     bool   // expose /debug/pprof on the metrics listener (profiling; off by default)
 	MetricsPerTenant bool   // add a tenant label to decision metrics
 	LogLevel         slog.Level
 
@@ -56,9 +60,21 @@ func Load() (Config, error) {
 	if c.FailOpen, err = getBool("RL_FAIL_OPEN", true); err != nil {
 		return c, err
 	}
+	if c.BatchFlushers, err = getInt("RL_BATCH_FLUSHERS", 2); err != nil {
+		return c, err
+	}
+	if c.BatchMax, err = getInt("RL_BATCH_MAX", 128); err != nil {
+		return c, err
+	}
+	if c.BatchFlushers < 0 || c.BatchMax < 1 {
+		return c, fmt.Errorf("config RL_BATCH_FLUSHERS must be >= 0 and RL_BATCH_MAX >= 1")
+	}
 	c.MetricsAddr = getStr("RL_METRICS_ADDR", ":9090")
 	if v, ok := os.LookupEnv("RL_METRICS_ADDR"); ok && v == "" {
 		c.MetricsAddr = "" // explicitly empty disables
+	}
+	if c.PprofEnabled, err = getBool("RL_PPROF_ENABLED", false); err != nil {
+		return c, err
 	}
 	if c.MetricsPerTenant, err = getBool("RL_METRICS_PER_TENANT", true); err != nil {
 		return c, err

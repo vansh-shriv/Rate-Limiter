@@ -15,6 +15,21 @@ func TestLoadDefaults(t *testing.T) {
 	}
 }
 
+func TestBatchingDefaultsAndValidation(t *testing.T) {
+	c, err := Load()
+	if err != nil || c.BatchFlushers != 2 || c.BatchMax != 128 {
+		t.Fatalf("defaults: %+v err=%v", c, err)
+	}
+	t.Setenv("RL_BATCH_FLUSHERS", "0") // 0 disables pipelining
+	if c, err = Load(); err != nil || c.BatchFlushers != 0 {
+		t.Fatalf("disable: %+v err=%v", c, err)
+	}
+	t.Setenv("RL_BATCH_FLUSHERS", "-1")
+	if _, err = Load(); err == nil {
+		t.Fatal("negative flushers must be rejected")
+	}
+}
+
 func TestLoadOverrides(t *testing.T) {
 	t.Setenv("RL_REDIS_ADDR", "redis:6379")
 	t.Setenv("RL_REDIS_POOL_SIZE", "50")

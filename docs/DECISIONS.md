@@ -32,3 +32,9 @@ Hits take only an RLock. Concurrent misses collapse into one Redis read. "Not fo
 
 ## ADR-010: Admin plane secured by one static bearer token (for now)
 Simple and adequate for a service run by one team; compared in constant time via fixed-length hashes; the admin API is off unless `RL_ADMIN_TOKEN` is set. Later options: scoped/rotating tokens, mTLS, or a separate private listener.
+
+## ADR-011: Pipeline concurrent decisions to Redis (Batcher), on by default
+Each decision is one Redis round trip; under load that overhead dominates. `limiter.Batcher` coalesces calls that are *already waiting* into one pipeline (never waits to fill a batch, so no added latency when idle). Each Lua script stays atomic. Measured: +60% closed-loop throughput, never worse than direct. Default 2 flushers (weak evidence; re-tune per hardware). `RL_BATCH_FLUSHERS=0` disables.
+
+## ADR-012: Benchmarks are open-loop and self-verifying; unproven claims are not made
+Latency is measured from intended send time (no coordinated omission). The harness asserts which variant it runs and refuses to start on busy ports. The 20k @ p99<5 ms target was not met on the available hardware and is documented as such rather than quoted.
