@@ -9,11 +9,21 @@ services:
       timeout: 2s
       retries: 10
 
+  # Demo upstream service: echoes request info. The app proxies to it behind the rate limiter.
+  upstream:
+    image: traefik/whoami
+
   app:
     build: .
     environment:
       RL_REDIS_ADDR: redis:6379
+      RL_UPSTREAM_URL: http://upstream:80
+      RL_DEFAULT_ALGORITHM: token_bucket
+      RL_DEFAULT_LIMIT: "5"        # demo values: 5 requests / 10s
+      RL_DEFAULT_WINDOW: 10s
     ports: ["8080:8080"]
     depends_on:
       redis:
         condition: service_healthy
+      upstream:
+        condition: service_started
