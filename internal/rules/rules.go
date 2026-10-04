@@ -11,6 +11,9 @@ import (
 // ErrNotFound means the tenant is unknown and no fallback applies.
 var ErrNotFound = errors.New("rules: tenant not found")
 
+// ErrDisabled means the tenant exists but has been switched off.
+var ErrDisabled = errors.New("rules: tenant disabled")
+
 // Provider returns the rule for a tenant. Phase 6 adds a Redis-backed implementation.
 type Provider interface {
 	Rule(ctx context.Context, tenant string) (limiter.Rule, error)

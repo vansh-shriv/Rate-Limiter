@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"ratelimiter/internal/auth"
 	"ratelimiter/internal/decision"
 	"ratelimiter/internal/limiter"
 	"ratelimiter/internal/rules"
@@ -73,7 +74,7 @@ func TestAPIKeyBeatsIP(t *testing.T) {
 	req := httptest.NewRequest("GET", "/", nil)
 	req.Header.Set("X-API-Key", "k1")
 	run(t, f, true, req)
-	if f.got != "rl:{default}:token_bucket:key:k1" {
+	if f.got != "rl:{default}:token_bucket:key:"+auth.KeyID(auth.HashKey("k1")) {
 		t.Fatalf("key = %q", f.got)
 	}
 }
@@ -110,4 +111,50 @@ type notFound struct{}
 
 func (notFound) Rule(context.Context, string) (limiter.Rule, error) {
 	return limiter.Rule{}, rules.ErrNotFound
+}
+
+type fixedID struct {
+	id  auth.Identity
+	err error
+}
+
+func (f fixedID) Identify(*http.Request) (auth.Identity, error) { return f.id, f.err }
+
+func TestIdentifierErrors(t *testing.T) {
+	for _, tc := range []struct {
+		err      error
+		failOpen bool
+		want     int
+	}{
+		{auth.ErrNoCredentials, true, 401},
+		{auth.ErrInvalidCredentials, true, 401}, // auth failures are never fail-open
+		{errors.New("redis down"), true, 200},
+		{errors.New("redis down"), false, 503},
+	} {
+		h := New(Options{Identifier: fixedID{err: tc.err}, FailOpen: tc.failOpen,
+			Checker: decision.Checker{Limiter: &fakeLimiter{}, Rules: rules.NewStatic(limiter.Rule{})}})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest("GET", "/", nil))
+		if rec.Code != tc.want {
+			t.Errorf("err=%v failOpen=%v: code=%d want %d", tc.err, tc.failOpen, rec.Code, tc.want)
+		}
+		if tc.want == 401 && rec.Header().Get("WWW-Authenticate") == "" {
+			t.Error("missing WWW-Authenticate")
+		}
+	}
+}
+
+func TestDisabledTenantForbidden(t *testing.T) {
+	h := New(Options{Checker: decision.Checker{Limiter: &fakeLimiter{}, Rules: disabled{}}})(http.NotFoundHandler())
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("GET", "/", nil))
+	if rec.Code != 403 {
+		t.Fatalf("code=%d", rec.Code)
+	}
+}
+
+type disabled struct{}
+
+func (disabled) Rule(context.Context, string) (limiter.Rule, error) {
+	return limiter.Rule{}, rules.ErrDisabled
 }

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"ratelimiter/internal/auth"
 	"ratelimiter/internal/decision"
 	"ratelimiter/internal/limiter"
 	"ratelimiter/internal/rules"
@@ -28,7 +29,7 @@ func do(t *testing.T, l limiter.Limiter, failOpen bool, body string) *httptest.R
 	t.Helper()
 	c := decision.Checker{Limiter: l, Rules: rules.NewStatic(limiter.Rule{Algorithm: limiter.TokenBucketAlgo, Limit: 10, Window: time.Second})}
 	rec := httptest.NewRecorder()
-	CheckHandler(c, failOpen, slog.Default())(rec, httptest.NewRequest("POST", "/v1/check", strings.NewReader(body)))
+	CheckHandler(c, auth.HeaderIdentifier{}, failOpen, slog.Default())(rec, httptest.NewRequest("POST", "/v1/check", strings.NewReader(body)))
 	return rec
 }
 
@@ -42,7 +43,7 @@ func TestCheckAllowed(t *testing.T) {
 }
 
 func TestCheckDenied429(t *testing.T) {
-	rec := do(t, fakeLimiter{res: limiter.Result{RetryAfter: 1200 * time.Millisecond}}, true, `{"tenant":"acme","key":"u1","cost":2}`)
+	rec := do(t, fakeLimiter{res: limiter.Result{RetryAfter: 1200 * time.Millisecond}}, true, `{"key":"u1","cost":2}`)
 	var resp CheckResponse
 	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
 	if rec.Code != 429 || resp.Allowed || resp.RetryAfterMs != 1200 || rec.Header().Get("Retry-After") != "2" {
@@ -52,9 +53,10 @@ func TestCheckDenied429(t *testing.T) {
 
 func TestCheckBadInput(t *testing.T) {
 	for name, body := range map[string]string{
-		"not json":      `nope`,
-		"missing key":   `{"tenant":"a"}`,
-		"unknown field": `{"key":"k","bogus":1}`,
+		"not json":       `nope`,
+		"missing key":    `{}`,
+		"tenant in body": `{"tenant":"a","key":"k"}`,
+		"unknown field":  `{"key":"k","bogus":1}`,
 	} {
 		if rec := do(t, fakeLimiter{}, true, body); rec.Code != 400 {
 			t.Errorf("%s: code=%d", name, rec.Code)

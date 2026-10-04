@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"ratelimiter/internal/api"
+	"ratelimiter/internal/auth"
 	"ratelimiter/internal/decision"
 	"ratelimiter/internal/middleware"
 )
@@ -19,17 +20,22 @@ import (
 type ReadyFunc func(ctx context.Context) error
 
 type Deps struct {
-	Addr     string
-	Ready    ReadyFunc
-	Checker  decision.Checker
-	Upstream *url.URL // optional: when set, every other path is proxied here behind the rate limiter
-	FailOpen bool
-	Log      *slog.Logger
+	Addr       string
+	Ready      ReadyFunc
+	Checker    decision.Checker
+	Identifier auth.Identifier // who is calling; default auth.HeaderIdentifier (dev only)
+	Admin      http.Handler    // optional: mounted at /admin/ (already authenticated)
+	Upstream   *url.URL        // optional: when set, every other path is proxied here behind the rate limiter
+	FailOpen   bool
+	Log        *slog.Logger
 }
 
 func New(d Deps) *http.Server {
 	if d.Log == nil {
 		d.Log = slog.Default()
+	}
+	if d.Identifier == nil {
+		d.Identifier = auth.HeaderIdentifier{}
 	}
 	mux := http.NewServeMux()
 
@@ -48,11 +54,15 @@ func New(d Deps) *http.Server {
 	})
 
 	// Decision API: "should this request be allowed?" for callers that enforce limits themselves.
-	mux.Handle("POST /v1/check", api.CheckHandler(d.Checker, d.FailOpen, d.Log))
+	mux.Handle("POST /v1/check", api.CheckHandler(d.Checker, d.Identifier, d.FailOpen, d.Log))
+
+	if d.Admin != nil {
+		mux.Handle("/admin/", d.Admin)
+	}
 
 	// Gateway mode: rate-limit, then reverse-proxy to the upstream.
 	if d.Upstream != nil {
-		limit := middleware.New(middleware.Options{Checker: d.Checker, FailOpen: d.FailOpen, Log: d.Log})
+		limit := middleware.New(middleware.Options{Checker: d.Checker, Identifier: d.Identifier, FailOpen: d.FailOpen, Log: d.Log})
 		mux.Handle("/", limit(httputil.NewSingleHostReverseProxy(d.Upstream)))
 	}
 

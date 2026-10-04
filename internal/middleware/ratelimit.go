@@ -4,22 +4,18 @@ package middleware
 import (
 	"errors"
 	"log/slog"
-	"net"
 	"net/http"
 	"time"
 
+	"ratelimiter/internal/auth"
 	"ratelimiter/internal/decision"
 	"ratelimiter/internal/rules"
 )
 
-const DefaultTenant = "default"
-
 type Options struct {
 	Checker decision.Checker
-	// TenantFunc/SubjectFunc identify whose limit applies and which bucket within it.
-	// Defaults: X-Tenant-ID header (or "default"); X-API-Key header, else client IP.
-	TenantFunc  func(*http.Request) string
-	SubjectFunc func(*http.Request) string
+	// Identifier decides whose rule applies and which bucket. Default: auth.HeaderIdentifier (dev only).
+	Identifier auth.Identifier
 	// FailOpen lets traffic through when the limiter backend errors; otherwise respond 503.
 	FailOpen bool
 	Log      *slog.Logger
@@ -27,25 +23,29 @@ type Options struct {
 
 // New returns middleware that enforces the tenant's rule before calling next.
 func New(o Options) func(http.Handler) http.Handler {
-	if o.TenantFunc == nil {
-		o.TenantFunc = DefaultTenantFunc
-	}
-	if o.SubjectFunc == nil {
-		o.SubjectFunc = DefaultSubjectFunc
+	if o.Identifier == nil {
+		o.Identifier = auth.HeaderIdentifier{}
 	}
 	if o.Log == nil {
 		o.Log = slog.Default()
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			tenant, subject := o.TenantFunc(r), o.SubjectFunc(r)
-			out, err := o.Checker.Check(r.Context(), tenant, subject, 1)
+			id, err := o.Identifier.Identify(r)
+			var out decision.Outcome
+			if err == nil {
+				out, err = o.Checker.Check(r.Context(), id.Tenant, id.Subject, 1)
+			}
 			switch {
-			case errors.Is(err, rules.ErrNotFound):
-				http.Error(w, "unknown tenant", http.StatusForbidden)
+			case errors.Is(err, auth.ErrNoCredentials), errors.Is(err, auth.ErrInvalidCredentials):
+				w.Header().Set("WWW-Authenticate", `Bearer realm="ratelimiter"`)
+				http.Error(w, "valid API key required", http.StatusUnauthorized)
+				return
+			case errors.Is(err, rules.ErrNotFound), errors.Is(err, rules.ErrDisabled):
+				http.Error(w, "tenant not allowed", http.StatusForbidden)
 				return
 			case err != nil:
-				o.Log.Error("rate limiter backend error", "tenant", tenant, "err", err, "fail_open", o.FailOpen)
+				o.Log.Error("rate limiter backend error", "tenant", id.Tenant, "err", err, "fail_open", o.FailOpen)
 				if o.FailOpen {
 					next.ServeHTTP(w, r)
 					return
@@ -72,24 +72,4 @@ func New(o Options) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 		})
 	}
-}
-
-func DefaultTenantFunc(r *http.Request) string {
-	if t := r.Header.Get("X-Tenant-ID"); t != "" {
-		return t
-	}
-	return DefaultTenant
-}
-
-// DefaultSubjectFunc uses the API key if present, else the TCP peer address.
-// X-Forwarded-For is deliberately NOT trusted: it is client-controlled unless a trusted proxy sets it.
-func DefaultSubjectFunc(r *http.Request) string {
-	if k := r.Header.Get("X-API-Key"); k != "" {
-		return "key:" + k
-	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		host = r.RemoteAddr
-	}
-	return "ip:" + host
 }

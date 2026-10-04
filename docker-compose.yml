@@ -18,8 +18,10 @@ services:
     environment:
       RL_REDIS_ADDR: redis:6379
       RL_UPSTREAM_URL: http://upstream:80
-      RL_DEFAULT_ALGORITHM: token_bucket
-      RL_DEFAULT_LIMIT: "5"        # demo values: 5 requests / 10s
+      RL_ADMIN_TOKEN: dev-admin-token   # DEMO ONLY: set a strong secret in real deployments
+      # RL_AUTH_MODE defaults to "apikey": clients must present a tenant API key.
+      # Fallback rule for the built-in "default" tenant (only reachable with RL_AUTH_MODE=header):
+      RL_DEFAULT_LIMIT: "5"
       RL_DEFAULT_WINDOW: 10s
     ports: ["8080:8080"]
     depends_on:

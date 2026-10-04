@@ -3,6 +3,8 @@
 ## Goal
 Make the limiters usable: a decision API, a drop-in `net/http` middleware, and a reverse-proxy gateway mode. Full reference in [../API.md](../API.md).
 
+> **Update (Phase 6):** the `tenant` body field and the trusted `X-Tenant-ID` header described below were replaced by API-key authentication (ADR-008). See phase-06 and API.md for current behavior.
+
 ## Package layout (new)
 ```
 internal/limiter/key.go        Key(tenant, algo, subject) -> "rl:{tenant}:algo:subject"

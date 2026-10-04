@@ -5,33 +5,72 @@
 |---|---|
 | `GET /healthz` | Liveness |
 | `GET /readyz` | Readiness (Redis ping); 503 if down |
-Never rate limited.
+
+Never rate limited, never authenticated.
+
+## Authentication (data plane)
+Default mode `RL_AUTH_MODE=apikey`: every request to `/v1/check` and the gateway must carry a tenant API key —
+`X-API-Key: <key>` or `Authorization: Bearer <key>`. The key determines the **tenant** (and therefore the rule);
+the **bucket** (subject) is the key's public id, so limits are per API key.
+Missing/invalid key → `401` + `WWW-Authenticate`; unknown or disabled tenant → `403`. Auth failures are never fail-open.
+
+`RL_AUTH_MODE=header` is development-only: the tenant is taken from `X-Tenant-ID` (unauthenticated), the bucket from the API key if sent, else the client IP.
 
 ## Decision API — `POST /v1/check`
-Ask "may this request proceed?" without proxying anything.
+Ask "may this request proceed?" without proxying anything. The tenant comes from the API key, never from the body.
 ```
-POST /v1/check
-{"tenant": "acme", "key": "user42", "cost": 1}      # tenant defaults to "default", cost to 1
+POST /v1/check        X-API-Key: rlk_...
+{"key": "enduser42", "cost": 1}      # key = who/what is limited within your tenant; cost defaults to 1
 ```
 | Status | Meaning |
 |---|---|
 | 200 | allowed |
 | 429 | denied (body + `Retry-After` tell when to retry) |
-| 400 | bad JSON, missing `key`, unknown field, `cost` > capacity, invalid rule |
-| 404 | unknown tenant |
+| 400 | bad JSON, missing `key`, unknown field (including `tenant`), `cost` > capacity |
+| 401 / 403 | missing-or-invalid key / unknown-or-disabled tenant |
 | 503 | backend (Redis) error and fail-closed |
+
 200/429 body:
 ```json
 {"allowed":true,"algorithm":"token_bucket","limit":5,"remaining":4,"retry_after_ms":0,"reset_after_ms":2000,"delay_ms":0}
 ```
-`delay_ms` (leaky bucket only) = how long the caller should hold the request. With fail-open and a backend error: `200`, `allowed:true`, header `X-RateLimit-Status: degraded`.
+`delay_ms` (leaky bucket only) = how long the caller should hold the request.
+With fail-open and a backend error: `200`, `allowed:true`, header `X-RateLimit-Status: degraded`.
 
 ## Gateway mode — everything else
-Set `RL_UPSTREAM_URL`; all other paths are rate limited, then reverse-proxied.
-- **Tenant:** `X-Tenant-ID` header (default `default`). *(Phase 6 replaces this with API-key → tenant lookup; a client-supplied tenant header is not authentication.)*
-- **Subject (bucket):** `X-API-Key` header, else TCP peer IP. `X-Forwarded-For` is **not** trusted.
-- **Headers:** `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset` (seconds), and on 429 `Retry-After` (seconds, ≥1).
+Set `RL_UPSTREAM_URL`; all other paths are authenticated, rate limited, then reverse-proxied.
+- **Headers:** `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset` (seconds), and on 429 `Retry-After` (seconds, at least 1).
 - Leaky bucket: admitted requests are held for `Delay` (cancelled if the client disconnects).
+- `X-Forwarded-For` is **not** trusted (client-controlled).
+
+## Admin API — `/admin/v1` (control plane)
+Enabled only when `RL_ADMIN_TOKEN` is set. Every call needs `Authorization: Bearer <admin token>` (constant-time compared), else `401`.
+
+| Method & path | Purpose |
+|---|---|
+| `PUT /admin/v1/tenants/{id}` | create/replace a tenant (idempotent) |
+| `GET /admin/v1/tenants` · `GET .../{id}` | list / fetch |
+| `DELETE /admin/v1/tenants/{id}` | delete tenant **and revoke all its keys** (204) |
+| `POST /admin/v1/tenants/{id}/keys` | mint an API key — **plaintext returned once** (201) |
+| `GET /admin/v1/tenants/{id}/keys` | list key ids (never plaintext) |
+| `DELETE /admin/v1/tenants/{id}/keys/{keyID}` | revoke (204) |
+
+Tenant body:
+```json
+{"name": "Acme", "disabled": false,
+ "rule": {"algorithm": "sliding_window", "limit": 100, "window": "1m", "burst": 0}}
+```
+- `id`: `[a-zA-Z0-9_-]{1,64}`. `algorithm`: `token_bucket` | `sliding_window` | `leaky_bucket`. `window`: Go duration (`30s`, `1m`, `24h`).
+- `burst` (token/leaky bucket) defaults to `limit`. `sliding_window` `limit` must be at most 100 000 (memory is O(limit)).
+- Changes reach **all instances within milliseconds** (pub/sub); `RL_TENANT_CACHE_TTL` bounds staleness if a message is ever lost.
+- Changing a tenant's *algorithm* starts fresh state (Redis keys include the algorithm name); changing only limit/window keeps counters.
+
+```
+H="Authorization: Bearer $RL_ADMIN_TOKEN"
+curl -X PUT  -H "$H" localhost:8080/admin/v1/tenants/acme -d '{"name":"Acme","rule":{"algorithm":"token_bucket","limit":100,"window":"1m"}}'
+curl -X POST -H "$H" localhost:8080/admin/v1/tenants/acme/keys        # -> {"key":"rlk_...","key_id":"..."}
+curl -H "X-API-Key: rlk_..." localhost:8080/anything                  # proxied, limited by acme's rule
+```
 
 ## Configuration (env)
 | Var | Default | |
@@ -39,6 +78,8 @@ Set `RL_UPSTREAM_URL`; all other paths are rate limited, then reverse-proxied.
 | `RL_HTTP_ADDR` | `:8080` | |
 | `RL_REDIS_ADDR` / `_PASSWORD` / `_DB` / `_POOL_SIZE` / `_TIMEOUT` | `localhost:6379` / – / 0 / 100 / 200ms | |
 | `RL_UPSTREAM_URL` | – | enables gateway mode |
+| `RL_ADMIN_TOKEN` | – | enables the admin API |
+| `RL_AUTH_MODE` | `apikey` | `apikey` or `header` (dev only) |
+| `RL_TENANT_CACHE_TTL` | `30s` | staleness bound for cached tenant config |
 | `RL_FAIL_OPEN` | `true` | allow traffic if Redis errors |
-| `RL_DEFAULT_ALGORITHM` | `token_bucket` | `token_bucket` \| `sliding_window` \| `leaky_bucket` |
-| `RL_DEFAULT_LIMIT` / `_WINDOW` / `_BURST` | 100 / 1m / 0 (=limit) | |
+| `RL_DEFAULT_ALGORITHM` / `_LIMIT` / `_WINDOW` / `_BURST` | `token_bucket` / 100 / 1m / 0 | rule of the built-in `default` tenant when none is configured (reachable in header mode) |

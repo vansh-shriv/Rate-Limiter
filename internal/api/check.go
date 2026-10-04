@@ -7,15 +7,16 @@ import (
 	"log/slog"
 	"net/http"
 
+	"ratelimiter/internal/auth"
 	"ratelimiter/internal/decision"
 	"ratelimiter/internal/limiter"
 	"ratelimiter/internal/rules"
 )
 
+// CheckRequest: the tenant comes from the caller's credentials (see auth.Identifier), never from the body.
 type CheckRequest struct {
-	Tenant string `json:"tenant"`
-	Key    string `json:"key"`
-	Cost   int64  `json:"cost"` // optional, default 1
+	Key  string `json:"key"`  // the end-user / resource being limited, within the caller's tenant
+	Cost int64  `json:"cost"` // optional, default 1
 }
 
 type CheckResponse struct {
@@ -34,8 +35,13 @@ type errorBody struct {
 
 // CheckHandler serves POST /v1/check. 200 = allowed, 429 = denied; both carry the full decision body
 // and rate-limit headers, so callers may use either the status or the body.
-func CheckHandler(c decision.Checker, failOpen bool, log *slog.Logger) http.HandlerFunc {
+func CheckHandler(c decision.Checker, ident auth.Identifier, failOpen bool, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		id, err := ident.Identify(r)
+		if err != nil {
+			handleErr(w, err, id.Tenant, failOpen, log)
+			return
+		}
 		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 		dec := json.NewDecoder(r.Body)
 		dec.DisallowUnknownFields()
@@ -48,30 +54,13 @@ func CheckHandler(c decision.Checker, failOpen bool, log *slog.Logger) http.Hand
 			writeJSON(w, http.StatusBadRequest, errorBody{"key is required"})
 			return
 		}
-		if req.Tenant == "" {
-			req.Tenant = "default"
-		}
 		if req.Cost == 0 {
 			req.Cost = 1
 		}
 
-		out, err := c.Check(r.Context(), req.Tenant, req.Key, req.Cost)
-		switch {
-		case errors.Is(err, rules.ErrNotFound):
-			writeJSON(w, http.StatusNotFound, errorBody{"unknown tenant"})
-			return
-		case errors.Is(err, limiter.ErrInvalidRule), errors.Is(err, limiter.ErrCostTooHigh):
-			writeJSON(w, http.StatusBadRequest, errorBody{err.Error()})
-			return
-		case err != nil:
-			log.Error("check failed", "tenant", req.Tenant, "err", err, "fail_open", failOpen)
-			if failOpen {
-				// Explicit degraded answer: allowed, but with no quota information.
-				w.Header().Set("X-RateLimit-Status", "degraded")
-				writeJSON(w, http.StatusOK, CheckResponse{Allowed: true})
-				return
-			}
-			writeJSON(w, http.StatusServiceUnavailable, errorBody{"rate limiter unavailable"})
+		out, err := c.Check(r.Context(), id.Tenant, req.Key, req.Cost)
+		if err != nil {
+			handleErr(w, err, id.Tenant, failOpen, log)
 			return
 		}
 
@@ -89,6 +78,27 @@ func CheckHandler(c decision.Checker, failOpen bool, log *slog.Logger) http.Hand
 			ResetAfterMs: out.Result.ResetAfter.Milliseconds(),
 			DelayMs:      out.Result.Delay.Milliseconds(),
 		})
+	}
+}
+
+func handleErr(w http.ResponseWriter, err error, tenant string, failOpen bool, log *slog.Logger) {
+	switch {
+	case errors.Is(err, auth.ErrNoCredentials), errors.Is(err, auth.ErrInvalidCredentials):
+		w.Header().Set("WWW-Authenticate", `Bearer realm="ratelimiter"`)
+		writeJSON(w, http.StatusUnauthorized, errorBody{"valid API key required"})
+	case errors.Is(err, rules.ErrNotFound), errors.Is(err, rules.ErrDisabled):
+		writeJSON(w, http.StatusForbidden, errorBody{"tenant not allowed"})
+	case errors.Is(err, limiter.ErrInvalidRule), errors.Is(err, limiter.ErrCostTooHigh):
+		writeJSON(w, http.StatusBadRequest, errorBody{err.Error()})
+	default:
+		log.Error("check failed", "tenant", tenant, "err", err, "fail_open", failOpen)
+		if failOpen {
+			// Explicit degraded answer: allowed, but with no quota information.
+			w.Header().Set("X-RateLimit-Status", "degraded")
+			writeJSON(w, http.StatusOK, CheckResponse{Allowed: true})
+			return
+		}
+		writeJSON(w, http.StatusServiceUnavailable, errorBody{"rate limiter unavailable"})
 	}
 }
 

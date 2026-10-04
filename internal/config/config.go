@@ -19,6 +19,10 @@ type Config struct {
 	RedisTimeout    time.Duration // dial/read/write timeout
 	ShutdownTimeout time.Duration
 
+	AdminToken     string        // enables the admin API when non-empty
+	AuthMode       string        // "apikey" (default, secure) or "header" (dev: trust X-Tenant-ID)
+	TenantCacheTTL time.Duration // staleness bound for cached tenant config
+
 	UpstreamURL string       // if set, the service acts as a rate-limiting reverse proxy for it
 	FailOpen    bool         // allow traffic when the limiter backend errors
 	DefaultRule limiter.Rule // used until per-tenant config exists (Phase 6) and as the fallback after
@@ -45,6 +49,14 @@ func Load() (Config, error) {
 		return c, err
 	}
 	if c.FailOpen, err = getBool("RL_FAIL_OPEN", true); err != nil {
+		return c, err
+	}
+	c.AdminToken = getStr("RL_ADMIN_TOKEN", "")
+	c.AuthMode = getStr("RL_AUTH_MODE", "apikey")
+	if c.AuthMode != "apikey" && c.AuthMode != "header" {
+		return c, fmt.Errorf("config RL_AUTH_MODE: must be apikey or header, got %q", c.AuthMode)
+	}
+	if c.TenantCacheTTL, err = getDur("RL_TENANT_CACHE_TTL", 30*time.Second); err != nil {
 		return c, err
 	}
 	c.UpstreamURL = getStr("RL_UPSTREAM_URL", "")

@@ -11,12 +11,14 @@ import (
 	"os/signal"
 	"syscall"
 
+	"ratelimiter/internal/admin"
+	"ratelimiter/internal/auth"
 	"ratelimiter/internal/config"
 	"ratelimiter/internal/decision"
 	"ratelimiter/internal/limiter"
-	"ratelimiter/internal/rules"
 	"ratelimiter/internal/server"
 	"ratelimiter/internal/store"
+	"ratelimiter/internal/tenant"
 )
 
 func main() {
@@ -49,13 +51,31 @@ func run(log *slog.Logger) error {
 	defer rdb.Close()
 	log.Info("redis connected", "addr", cfg.RedisAddr, "pool", cfg.RedisPoolSize)
 
+	tstore := tenant.NewStore(rdb)
+	provider := tenant.NewProvider(rdb, tstore, cfg.DefaultRule, cfg.TenantCacheTTL, log)
+	go provider.Watch(ctx) // hot reload: apply config changes made on any instance
+
+	var identifier auth.Identifier = provider
+	if cfg.AuthMode == "header" {
+		identifier = auth.HeaderIdentifier{}
+		log.Warn("RL_AUTH_MODE=header: tenant is taken from X-Tenant-ID without authentication; development only")
+	}
+	var adminHandler http.Handler
+	if cfg.AdminToken != "" {
+		adminHandler = admin.New(tstore, cfg.AdminToken, log)
+	} else {
+		log.Info("admin API disabled (set RL_ADMIN_TOKEN to enable)")
+	}
+
 	srv := server.New(server.Deps{
-		Addr:     cfg.HTTPAddr,
-		Ready:    func(ctx context.Context) error { return rdb.Ping(ctx).Err() },
-		Checker:  decision.Checker{Limiter: limiter.NewRouter(rdb), Rules: rules.NewStatic(cfg.DefaultRule)},
-		Upstream: upstream,
-		FailOpen: cfg.FailOpen,
-		Log:      log,
+		Addr:       cfg.HTTPAddr,
+		Ready:      func(ctx context.Context) error { return rdb.Ping(ctx).Err() },
+		Checker:    decision.Checker{Limiter: limiter.NewRouter(rdb), Rules: provider},
+		Identifier: identifier,
+		Admin:      adminHandler,
+		Upstream:   upstream,
+		FailOpen:   cfg.FailOpen,
+		Log:        log,
 	})
 
 	errCh := make(chan error, 1)
