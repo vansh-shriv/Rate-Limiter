@@ -18,4 +18,5 @@ type Result struct {
 	Remaining  int64         // whole tokens/slots left after this decision
 	RetryAfter time.Duration // 0 when allowed
 	ResetAfter time.Duration // time until the limiter is back to full
+	Delay      time.Duration // leaky bucket only: how long the caller should wait before proceeding
 }
