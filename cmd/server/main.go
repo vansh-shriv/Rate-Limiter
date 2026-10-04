@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -72,6 +73,20 @@ func run(log *slog.Logger, cfg config.Config) error {
 	provider.ObserveCache(m.ObserveCache)
 	go provider.Watch(ctx) // hot reload: apply config changes made on any instance
 
+	// Circuit breaker: when Redis is down, fail fast (and apply the fail-open/closed policy) instead of
+	// making every request wait out the Redis timeout.
+	var lim limiter.Limiter = limiter.NewRouter(scripter)
+	if cfg.BreakerFailures > 0 {
+		lim = limiter.NewBreaker(lim, cfg.BreakerFailures, cfg.BreakerCooldown, func(open bool) {
+			m.SetBreakerOpen(open)
+			if open {
+				log.Error("redis circuit breaker OPEN: decisions fail fast", "cooldown", cfg.BreakerCooldown)
+			} else {
+				log.Info("redis circuit breaker closed: backend recovered")
+			}
+		})
+	}
+
 	var identifier auth.Identifier = provider
 	if cfg.AuthMode == "header" {
 		identifier = auth.HeaderIdentifier{}
@@ -84,16 +99,19 @@ func run(log *slog.Logger, cfg config.Config) error {
 		log.Info("admin API disabled (set RL_ADMIN_TOKEN to enable)")
 	}
 
+	var draining atomic.Bool
 	srv := server.New(server.Deps{
-		Addr:       cfg.HTTPAddr,
-		Ready:      func(ctx context.Context) error { return rdb.Ping(ctx).Err() },
-		Checker:    decision.Checker{Limiter: limiter.NewRouter(scripter), Rules: provider, Observer: m},
-		Identifier: identifier,
-		Admin:      adminHandler,
-		Upstream:   upstream,
-		FailOpen:   cfg.FailOpen,
-		Log:        log,
-		Metrics:    m,
+		Addr:            cfg.HTTPAddr,
+		Ready:           func(ctx context.Context) error { return rdb.Ping(ctx).Err() },
+		Checker:         decision.Checker{Limiter: lim, Rules: provider, Observer: m, Policy: provider},
+		Identifier:      identifier,
+		Admin:           adminHandler,
+		Upstream:        upstream,
+		UpstreamTimeout: cfg.UpstreamTimeout,
+		FailOpen:        cfg.FailOpen,
+		Log:             log,
+		Metrics:         m,
+		Draining:        &draining,
 	})
 
 	// /metrics lives on its own listener so it is never exposed on the public/gateway port.
@@ -131,12 +149,20 @@ func run(log *slog.Logger, cfg config.Config) error {
 	case err := <-errCh:
 		return err
 	case <-ctx.Done():
-		log.Info("shutting down")
+		log.Info("shutting down", "drain_delay", cfg.ShutdownDelay)
 	}
+	// Graceful shutdown, in order:
+	//  1. flip /readyz to 503 and wait, so load balancers stop sending new traffic;
+	//  2. stop accepting connections and let in-flight requests finish (bounded by ShutdownTimeout);
+	//  3. stop the metrics listener (kept up until now so the last scrape sees the drain);
+	//  4. deferred: close the Redis pipeliner, then the Redis client, once nothing can use them.
+	draining.Store(true)
+	time.Sleep(cfg.ShutdownDelay)
 	sctx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 	defer cancel()
+	err = srv.Shutdown(sctx)
 	if msrv != nil {
 		_ = msrv.Shutdown(sctx)
 	}
-	return srv.Shutdown(sctx)
+	return err
 }

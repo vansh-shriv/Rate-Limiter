@@ -13,6 +13,7 @@ import (
 
 const (
 	maxCacheEntries = 10_000
+	staleRetry      = time.Second
 	loadTimeout     = 2 * time.Second
 )
 
@@ -26,7 +27,8 @@ type entry[V any] struct {
 //   - hits are served under an RLock (hot path at 20k+ req/s)
 //   - concurrent misses for one key share a single load (singleflight) → no thundering herd on Redis
 //   - "not found" is cached briefly (negTTL) so random tenant ids / API keys can't hammer Redis
-//   - backend errors are never cached
+//   - backend errors are never cached, and if an expired entry exists it is served instead (stale-if-error), with
+//     the next reload attempt delayed by staleRetry so a dead Redis is probed about once a second per key, not per request
 //   - size is bounded: when full, expired entries are dropped, then everything is flushed
 type ttlCache[V any] struct {
 	mu      sync.RWMutex
@@ -35,7 +37,7 @@ type ttlCache[V any] struct {
 	negTTL  time.Duration
 	sf      singleflight.Group
 	nowFunc func() time.Time
-	observe func(result string) // optional: hit | miss | not_found | error | coalesced
+	observe func(result string) // optional: hit | miss | not_found | error | stale | coalesced
 }
 
 func newTTLCache[V any](ttl time.Duration) *ttlCache[V] {
@@ -68,6 +70,11 @@ func (c *ttlCache[V]) get(ctx context.Context, key string, load func(context.Con
 			c.note("not_found")
 		default:
 			c.note("error")
+			if ok && e.err == nil { // stale-if-error: keep serving the last known good value
+				out = entry[V]{v: e.v, exp: c.nowFunc().Add(staleRetry)}
+				c.put(key, out)
+				c.note("stale")
+			}
 		}
 		return out, nil
 	})
@@ -76,6 +83,18 @@ func (c *ttlCache[V]) get(ctx context.Context, key string, load func(context.Con
 	}
 	r := res.(entry[V])
 	return r.v, r.err
+}
+
+// peek returns the last known good value for key even if it has expired. It never loads.
+func (c *ttlCache[V]) peek(key string) (V, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	e, ok := c.m[key]
+	if !ok || e.err != nil {
+		var zero V
+		return zero, false
+	}
+	return e.v, true
 }
 
 func (c *ttlCache[V]) note(result string) {

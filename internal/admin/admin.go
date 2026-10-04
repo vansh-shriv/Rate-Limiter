@@ -53,6 +53,7 @@ type putRequest struct {
 	Name     string       `json:"name"`
 	Rule     limiter.Rule `json:"rule"`
 	Disabled bool         `json:"disabled"`
+	FailOpen *bool        `json:"fail_open"`
 }
 
 func (h *Handler) put(w http.ResponseWriter, r *http.Request) {
@@ -64,7 +65,7 @@ func (h *Handler) put(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errBody{"invalid JSON body: " + err.Error()})
 		return
 	}
-	t, err := h.store.Put(r.Context(), tenant.Tenant{ID: r.PathValue("id"), Name: req.Name, Rule: req.Rule, Disabled: req.Disabled})
+	t, err := h.store.Put(r.Context(), tenant.Tenant{ID: r.PathValue("id"), Name: req.Name, Rule: req.Rule, Disabled: req.Disabled, FailOpen: req.FailOpen})
 	if err != nil {
 		h.fail(w, err)
 		return

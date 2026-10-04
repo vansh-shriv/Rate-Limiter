@@ -141,12 +141,27 @@ func newProvider(t *testing.T, rdb *redis.Client, ttl time.Duration) *Provider {
 	t.Helper()
 	p := NewProvider(rdb, NewStore(rdb), testRule, ttl, slog.Default())
 	ctx, cancel := context.WithCancel(context.Background())
-	started := make(chan struct{})
-	go func() { close(started); p.Watch(ctx) }()
-	<-started
-	time.Sleep(100 * time.Millisecond) // let the subscription establish
 	t.Cleanup(cancel)
+	before := subscribers(rdb)
+	go p.Watch(ctx)
+	// Wait until Redis itself reports the new subscriber; a fixed sleep is racy when the machine is busy
+	// (a message published before the subscription exists is simply never seen).
+	deadline := time.Now().Add(5 * time.Second)
+	for subscribers(rdb) <= before {
+		if time.Now().After(deadline) {
+			t.Fatal("pub/sub subscription never established")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 	return p
+}
+
+func subscribers(rdb *redis.Client) int64 {
+	m, err := rdb.PubSubNumSub(context.Background(), eventsChan).Result()
+	if err != nil {
+		return 0
+	}
+	return m[eventsChan]
 }
 
 func eventually(t *testing.T, what string, cond func() bool) {

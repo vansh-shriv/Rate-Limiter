@@ -54,6 +54,16 @@ func (p *Provider) Rule(ctx context.Context, tenantID string) (limiter.Rule, err
 	return t.Rule, nil
 }
 
+// FailOpen reports the tenant's own backend-failure policy from the last known config. It never touches
+// Redis (it is called precisely when Redis is failing) and ignores cache expiry.
+func (p *Provider) FailOpen(tenantID string) (open, ok bool) {
+	t, found := p.tenants.peek(tenantID)
+	if !found || t.FailOpen == nil {
+		return false, false
+	}
+	return *t.FailOpen, true
+}
+
 // Identify authenticates the request by API key. The bucket subject is the key's public id,
 // so the raw key never reaches Redis keys or logs.
 func (p *Provider) Identify(r *http.Request) (auth.Identity, error) {

@@ -15,7 +15,8 @@
 | `rl_http_requests_total` | counter | `route`, `code` | `route` in {`check`, `gateway`, `admin`} |
 | `rl_http_request_duration_seconds` | histogram | `route` | gateway includes upstream time |
 | `rl_http_in_flight_requests` | gauge | – | |
-| `rl_config_cache_total` | counter | `cache` (`tenant`/`apikey`), `result` | `hit`, `miss`, `not_found`, `error`, `coalesced` |
+| `rl_config_cache_total` | counter | `cache` (`tenant`/`apikey`), `result` | `hit`, `miss`, `not_found`, `error`, `stale` (served an expired entry because Redis failed), `coalesced` |
+| `rl_circuit_open` | gauge | – | 1 while the Redis circuit breaker is open (decisions fail fast); **alert on this** |
 | `rl_build_info` | gauge | `version` | always 1 |
 | `go_*`, `process_*` | – | – | runtime |
 

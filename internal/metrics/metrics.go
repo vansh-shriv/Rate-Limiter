@@ -29,6 +29,7 @@ type Metrics struct {
 	httpReqs    *prometheus.CounterVec
 	httpDur     *prometheus.HistogramVec
 	inFlight    prometheus.Gauge
+	breakerOpen prometheus.Gauge
 }
 
 var _ decision.Observer = (*Metrics)(nil)
@@ -55,10 +56,11 @@ func New(perTenant bool, version string) *Metrics {
 		Buckets: latencyBuckets,
 	}, []string{"route"})
 	m.inFlight = prometheus.NewGauge(prometheus.GaugeOpts{Name: "rl_http_in_flight_requests", Help: "Requests currently being served."})
+	m.breakerOpen = prometheus.NewGauge(prometheus.GaugeOpts{Name: "rl_circuit_open", Help: "1 while the Redis circuit breaker is open (decisions fail fast), else 0."})
 	build := prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "rl_build_info", Help: "Build information."}, []string{"version"})
 	build.WithLabelValues(version).Set(1)
 
-	m.reg.MustRegister(m.decisions, m.decisionDur, m.cache, m.httpReqs, m.httpDur, m.inFlight, build,
+	m.reg.MustRegister(m.decisions, m.decisionDur, m.cache, m.httpReqs, m.httpDur, m.inFlight, m.breakerOpen, build,
 		collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 	return m
 }
@@ -91,3 +93,12 @@ func (m *Metrics) ObserveHTTP(route string, code int, took time.Duration) {
 }
 
 func (m *Metrics) InFlightAdd(delta float64) { m.inFlight.Add(delta) }
+
+// SetBreakerOpen records circuit breaker state changes.
+func (m *Metrics) SetBreakerOpen(open bool) {
+	if open {
+		m.breakerOpen.Set(1)
+	} else {
+		m.breakerOpen.Set(0)
+	}
+}

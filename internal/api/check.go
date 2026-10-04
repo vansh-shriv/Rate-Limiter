@@ -60,7 +60,7 @@ func CheckHandler(c decision.Checker, ident auth.Identifier, failOpen bool, log 
 
 		out, err := c.Check(r.Context(), id.Tenant, req.Key, req.Cost)
 		if err != nil {
-			handleErr(w, err, id.Tenant, failOpen, log)
+			handleErr(w, err, id.Tenant, c.ShouldFailOpen(id.Tenant, failOpen), log)
 			return
 		}
 

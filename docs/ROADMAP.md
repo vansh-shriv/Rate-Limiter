@@ -12,7 +12,12 @@ Status: ⬜ not started · 🟨 in progress · ✅ done (committed)
 | 5 | HTTP API + middleware | `/v1/check` endpoint, drop-in middleware, rate-limit headers (429, Retry-After) | ✅ |
 | 6 | Per-tenant config | Tenant store in Redis, admin API, hot reload, API keys | ✅ |
 | 7 | Observability | Prometheus metrics, Grafana dashboard, structured logs | ✅ |
-| 8 | Load testing & optimization | Open-loop load generator, benchmark harness, Redis pipelining, BENCHMARKS.md | 🟨 |
-| 9 | Hardening & polish | Fail-open/closed policy, graceful shutdown, CI, final README | ⬜ |
+| 8 | Load testing & optimization | Open-loop load generator, benchmark harness, Redis pipelining, BENCHMARKS.md | ✅ |
+| 9 | Hardening & polish | Circuit breaker, per-tenant fail policy, stale-if-error cache, graceful drain, hardened proxy, CI, final docs | 🟨 |
+
+## Open items after Phase 9
+- Prove (or retire) the 20k req/s @ p99 < 5 ms claim on a quiet dedicated Linux host: `make bench`, see docs/BENCHMARKS.md.
+- First CI run (race detector has never executed on this code).
+- Ideas: tenant-wide shared quota, Redis Cluster test, scoped admin tokens, alert rules, batch-size metric.
 
 Each phase has a journal in `docs/phases/phase-NN-*.md`.

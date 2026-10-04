@@ -34,10 +34,27 @@ type Observer interface {
 	Observe(tenant string, algorithm limiter.Algorithm, result Result, took time.Duration)
 }
 
+// Policy supplies per-tenant overrides of the backend-failure policy. It must not block or call Redis.
+type Policy interface {
+	FailOpen(tenant string) (open, ok bool)
+}
+
 type Checker struct {
 	Limiter  limiter.Limiter
 	Rules    rules.Provider
 	Observer Observer // optional
+	Policy   Policy   // optional
+}
+
+// ShouldFailOpen decides what to do when the backend errored: the tenant's own setting if it has one,
+// otherwise the global default.
+func (c Checker) ShouldFailOpen(tenant string, global bool) bool {
+	if c.Policy != nil {
+		if open, ok := c.Policy.FailOpen(tenant); ok {
+			return open
+		}
+	}
+	return global
 }
 
 func (c Checker) Check(ctx context.Context, tenant, subject string, cost int64) (Outcome, error) {

@@ -45,8 +45,9 @@ func New(o Options) func(http.Handler) http.Handler {
 				http.Error(w, "tenant not allowed", http.StatusForbidden)
 				return
 			case err != nil:
-				o.Log.Error("rate limiter backend error", "tenant", id.Tenant, "err", err, "fail_open", o.FailOpen)
-				if o.FailOpen {
+				failOpen := o.Checker.ShouldFailOpen(id.Tenant, o.FailOpen)
+				o.Log.Error("rate limiter backend error", "tenant", id.Tenant, "err", err, "fail_open", failOpen)
+				if failOpen {
 					next.ServeHTTP(w, r)
 					return
 				}

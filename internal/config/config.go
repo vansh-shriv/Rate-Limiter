@@ -20,6 +20,11 @@ type Config struct {
 	RedisTimeout    time.Duration // dial/read/write timeout
 	ShutdownTimeout time.Duration
 
+	BreakerFailures int           // consecutive backend failures that open the circuit (0 disables)
+	BreakerCooldown time.Duration // how long it stays open before a probe
+	ShutdownDelay   time.Duration // after SIGTERM: report not-ready for this long before closing listeners
+	UpstreamTimeout time.Duration // gateway: max wait for upstream response headers
+
 	BatchFlushers int // >0 (default 2) pipelines concurrent decisions to Redis (limiter.Batcher); 0 = one round trip per decision
 	BatchMax      int // max decisions per pipeline
 
@@ -59,6 +64,21 @@ func Load() (Config, error) {
 	}
 	if c.FailOpen, err = getBool("RL_FAIL_OPEN", true); err != nil {
 		return c, err
+	}
+	if c.BreakerFailures, err = getInt("RL_BREAKER_FAILURES", 5); err != nil {
+		return c, err
+	}
+	if c.BreakerCooldown, err = getDur("RL_BREAKER_COOLDOWN", 2*time.Second); err != nil {
+		return c, err
+	}
+	if c.ShutdownDelay, err = getDur("RL_SHUTDOWN_DELAY", 0); err != nil {
+		return c, err
+	}
+	if c.UpstreamTimeout, err = getDur("RL_UPSTREAM_TIMEOUT", 30*time.Second); err != nil {
+		return c, err
+	}
+	if c.BreakerFailures < 0 || c.BreakerCooldown <= 0 || c.ShutdownDelay < 0 || c.UpstreamTimeout <= 0 {
+		return c, fmt.Errorf("config: RL_BREAKER_FAILURES >= 0, RL_BREAKER_COOLDOWN > 0, RL_SHUTDOWN_DELAY >= 0, RL_UPSTREAM_TIMEOUT > 0 required")
 	}
 	if c.BatchFlushers, err = getInt("RL_BATCH_FLUSHERS", 2); err != nil {
 		return c, err

@@ -17,11 +17,14 @@ const maxSlidingWindowLimit = 100_000
 var idPattern = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 
 type Tenant struct {
-	ID        string       `json:"id"`
-	Name      string       `json:"name,omitempty"`
-	Rule      limiter.Rule `json:"rule"`
-	Disabled  bool         `json:"disabled,omitempty"`
-	UpdatedAt time.Time    `json:"updated_at"`
+	ID       string       `json:"id"`
+	Name     string       `json:"name,omitempty"`
+	Rule     limiter.Rule `json:"rule"`
+	Disabled bool         `json:"disabled,omitempty"`
+	// FailOpen overrides the global policy for this tenant when Redis is unavailable:
+	// true = let traffic through, false = reject (503). nil = use the global default.
+	FailOpen  *bool     `json:"fail_open,omitempty"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 func ValidID(id string) bool { return idPattern.MatchString(id) }

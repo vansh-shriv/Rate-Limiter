@@ -18,6 +18,7 @@ services:
     environment:
       RL_REDIS_ADDR: redis:6379
       RL_UPSTREAM_URL: http://upstream:80
+      RL_SHUTDOWN_DELAY: ${RL_SHUTDOWN_DELAY:-0s}   # set e.g. 5s behind a load balancer to drain before closing
       RL_ADMIN_TOKEN: dev-admin-token   # DEMO ONLY: set a strong secret in real deployments
       # RL_AUTH_MODE defaults to "apikey": clients must present a tenant API key.
       # Fallback rule for the built-in "default" tenant (only reachable with RL_AUTH_MODE=header):

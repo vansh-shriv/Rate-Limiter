@@ -1,0 +1,62 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then echo "needs gofmt:"; echo "$unformatted"; exit 1; fi
+      - name: vet
+        run: go vet ./...
+      # Linux has the C toolchain the race detector needs (it cannot run on the original Windows dev machine).
+      - name: test (race detector, against real Redis)
+        run: go test -race -count=1 -timeout 5m ./...
+        env:
+          RL_TEST_REDIS_ADDR: localhost:6379
+      - name: build
+        run: go build ./...
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: compose file is valid
+        run: docker compose config -q
+      - name: image builds
+        run: docker build --build-arg VERSION=${{ github.sha }} -t ratelimiter:ci .
+
+  dashboard:
+    # The Grafana JSON is generated; fail if someone edits it by hand or forgets to regenerate.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python deploy/gen_dashboard.py
+      - name: generated dashboard matches the committed one
+        run: git diff --exit-code deploy/grafana/dashboards/

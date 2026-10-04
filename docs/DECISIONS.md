@@ -38,3 +38,15 @@ Each decision is one Redis round trip; under load that overhead dominates. `limi
 
 ## ADR-012: Benchmarks are open-loop and self-verifying; unproven claims are not made
 Latency is measured from intended send time (no coordinated omission). The harness asserts which variant it runs and refuses to start on busy ports. The 20k @ p99<5 ms target was not met on the available hardware and is documented as such rather than quoted.
+
+## ADR-013: Circuit breaker in front of Redis
+Without it a Redis outage costs every request the full Redis timeout (200 ms) and accumulates goroutines. After N consecutive backend failures (default 5) the circuit opens and decisions fail in microseconds; after a cooldown one probe is allowed (half-open). Only backend failures count; validation errors and caller cancellation are ignored. Per process, no shared state. Exposed as `rl_circuit_open`.
+
+## ADR-014: Failure policy is per tenant, read from last-known config
+`fail_open` on a tenant overrides the global default, so tenants whose limits protect something fragile can fail closed while others fail open. It is read with a non-loading `peek` of the cache (ignoring expiry) because it is needed exactly when Redis cannot be asked. Unidentifiable requests (cold cache during an outage) use the global default.
+
+## ADR-015: Stale-if-error for tenant config and API keys
+An expired cache entry is served when the reload fails, with the next reload delayed 1 s. Keeps authentication and per-tenant policy working through a Redis outage and probes a dead Redis about once a second per key rather than once per request. Trade-off: a revoked key could keep working during an outage until Redis returns.
+
+## ADR-016: Graceful shutdown: drain, finish, then close dependencies
+SIGTERM flips `/readyz` to 503 (liveness stays green), waits `RL_SHUTDOWN_DELAY`, stops accepting and finishes in-flight requests, stops the metrics listener, then closes the pipeliner and Redis. Closing dependencies first would fail requests that were legitimately in flight.

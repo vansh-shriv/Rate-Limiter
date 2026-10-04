@@ -104,6 +104,17 @@ panel("timeseries", "Go goroutines and heap", 16, 28, 8, 8,
       [('go_goroutines{job="ratelimiter"}', "goroutines"),
        ('go_memstats_heap_alloc_bytes{job="ratelimiter"}', "heap bytes")], "short")
 
+# Row 6: resilience
+panel("stat", "Redis circuit breaker", 0, 36, 6, 6, [("max(rl_circuit_open)", "")], "none",
+      desc="OPEN = Redis is failing; decisions fail fast and each tenant's fail_open policy applies.",
+      thresholds=[green, {"color": "red", "value": 1}])
+panels[-1]["fieldConfig"]["defaults"]["mappings"] = [
+    {"type": "value", "options": {"0": {"text": "closed (healthy)"}, "1": {"text": "OPEN (Redis failing)"}}}]
+panel("timeseries", "Circuit open over time", 6, 36, 9, 6, [("max(rl_circuit_open)", "open")], "none", minv=0, maxv=1)
+panel("timeseries", "Stale config served / s", 15, 36, 9, 6,
+      [(f'sum(rate(rl_config_cache_total{{result="stale"}}[{R}])) or vector(0)', "stale")], "ops",
+      desc="Non-zero means tenant rules or API keys are being served from expired cache because Redis is failing.")
+
 dash = {
     "uid": "ratelimiter-overview", "title": "Rate Limiter Overview", "tags": ["ratelimiter"],
     "timezone": "browser", "schemaVersion": 39, "version": 1, "refresh": "5s",

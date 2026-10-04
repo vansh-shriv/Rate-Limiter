@@ -4,7 +4,7 @@
 | Endpoint | Purpose |
 |---|---|
 | `GET /healthz` | Liveness |
-| `GET /readyz` | Readiness (Redis ping); 503 if down |
+| `GET /readyz` | Readiness (Redis ping); 503 if Redis is down **or the process is draining after SIGTERM** |
 
 Never rate limited, never authenticated.
 
@@ -41,7 +41,10 @@ With fail-open and a backend error: `200`, `allowed:true`, header `X-RateLimit-S
 Set `RL_UPSTREAM_URL`; all other paths are authenticated, rate limited, then reverse-proxied.
 - **Headers:** `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset` (seconds), and on 429 `Retry-After` (seconds, at least 1).
 - Leaky bucket: admitted requests are held for `Delay` (cancelled if the client disconnects).
-- `X-Forwarded-For` is **not** trusted (client-controlled).
+- `X-Forwarded-For` is **not** trusted (client-controlled) when choosing the bucket; the proxy still appends the client IP for the upstream.
+- `X-API-Key` is stripped before the request reaches the upstream; `Authorization` is passed through untouched.
+- Upstream failures: `502` (connection refused/reset) or `504` (no response headers within `RL_UPSTREAM_TIMEOUT`), JSON body.
+- Redis down: the request follows the tenant's `fail_open` policy (proxied, or `503`).
 
 ## Admin API — `/admin/v1` (control plane)
 Enabled only when `RL_ADMIN_TOKEN` is set. Every call needs `Authorization: Bearer <admin token>` (constant-time compared), else `401`.
@@ -57,9 +60,10 @@ Enabled only when `RL_ADMIN_TOKEN` is set. Every call needs `Authorization: Bear
 
 Tenant body:
 ```json
-{"name": "Acme", "disabled": false,
+{"name": "Acme", "disabled": false, "fail_open": false,
  "rule": {"algorithm": "sliding_window", "limit": 100, "window": "1m", "burst": 0}}
 ```
+- `fail_open` (optional): what to do when Redis is unavailable. `true` = let this tenant's traffic through, `false` = reject with 503 (use for tenants whose limits protect something fragile or paid). Omitted = use the global `RL_FAIL_OPEN`. Takes effect from the last config the instance saw, so it still applies during a Redis outage.
 - `id`: `[a-zA-Z0-9_-]{1,64}`. `algorithm`: `token_bucket` | `sliding_window` | `leaky_bucket`. `window`: Go duration (`30s`, `1m`, `24h`).
 - `burst` (token/leaky bucket) defaults to `limit`. `sliding_window` `limit` must be at most 100 000 (memory is O(limit)).
 - Changes reach **all instances within milliseconds** (pub/sub); `RL_TENANT_CACHE_TTL` bounds staleness if a message is ever lost.
@@ -81,5 +85,13 @@ curl -H "X-API-Key: rlk_..." localhost:8080/anything                  # proxied,
 | `RL_ADMIN_TOKEN` | – | enables the admin API |
 | `RL_AUTH_MODE` | `apikey` | `apikey` or `header` (dev only) |
 | `RL_TENANT_CACHE_TTL` | `30s` | staleness bound for cached tenant config |
-| `RL_FAIL_OPEN` | `true` | allow traffic if Redis errors |
+| `RL_FAIL_OPEN` | `true` | global default when Redis errors; a tenant's `fail_open` overrides it |
+| `RL_BREAKER_FAILURES` / `_COOLDOWN` | `5` / `2s` | consecutive Redis failures that open the circuit; open time before a probe. `0` failures disables the breaker |
+| `RL_BATCH_FLUSHERS` / `RL_BATCH_MAX` | `2` / `128` | Redis pipelining; `0` flushers = one round trip per decision |
+| `RL_UPSTREAM_TIMEOUT` | `30s` | gateway: max wait for upstream response headers (else 504) |
+| `RL_SHUTDOWN_DELAY` / `RL_SHUTDOWN_TIMEOUT` | `0s` / `10s` | after SIGTERM: stay not-ready this long before closing listeners / max time to finish in-flight requests |
+| `RL_METRICS_ADDR` | `:9090` | private metrics listener (`""` disables) |
+| `RL_METRICS_PER_TENANT` | `true` | tenant label on decision metrics |
+| `RL_PPROF_ENABLED` | `false` | serve `/debug/pprof` on the metrics listener |
+| `RL_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
 | `RL_DEFAULT_ALGORITHM` / `_LIMIT` / `_WINDOW` / `_BURST` | `token_bucket` / 100 / 1m / 0 | rule of the built-in `default` tenant when none is configured (reachable in header mode) |
