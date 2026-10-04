@@ -13,11 +13,12 @@ Status: ⬜ not started · 🟨 in progress · ✅ done (committed)
 | 6 | Per-tenant config | Tenant store in Redis, admin API, hot reload, API keys | ✅ |
 | 7 | Observability | Prometheus metrics, Grafana dashboard, structured logs | ✅ |
 | 8 | Load testing & optimization | Open-loop load generator, benchmark harness, Redis pipelining, BENCHMARKS.md | ✅ |
-| 9 | Hardening & polish | Circuit breaker, per-tenant fail policy, stale-if-error cache, graceful drain, hardened proxy, CI, final docs | 🟨 |
+| 9 | Hardening & polish | Circuit breaker, per-tenant fail policy, stale-if-error cache, graceful drain, hardened proxy, CI, final docs | ✅ |
+
+All phases complete. First CI run: green (gofmt, vet, `go test -race` against Redis ≈ 1m29s, docker build ≈ 36s, dashboard drift check ≈ 5s).
 
 ## Open items after Phase 9
 - Prove (or retire) the 20k req/s @ p99 < 5 ms claim on a quiet dedicated Linux host: `make bench`, see docs/BENCHMARKS.md.
-- First CI run (race detector has never executed on this code).
 - Ideas: tenant-wide shared quota, Redis Cluster test, scoped admin tokens, alert rules, batch-size metric.
 
 Each phase has a journal in `docs/phases/phase-NN-*.md`.

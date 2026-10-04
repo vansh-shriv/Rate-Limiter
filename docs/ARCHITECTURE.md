@@ -63,6 +63,9 @@
 | SIGTERM | `/readyz` → 503 immediately; wait `RL_SHUTDOWN_DELAY` so load balancers drain; stop accepting, finish in-flight requests (≤ `RL_SHUTDOWN_TIMEOUT`); stop the metrics listener; close the pipeliner, then Redis. |
 | Wrong API key / unknown tenant | 401 / 403; never fail-open. |
 
+## Verification status
+Unit and integration tests run in CI on every push with the Go race detector against a real Redis (first run: green). The failure behavior above was exercised end to end with Docker Compose (Redis stop/start, per-tenant policy, drain on SIGTERM). Performance claims are limited to what `docs/BENCHMARKS.md` measured.
+
 ## Scaling notes
 - One Redis thread is the throughput ceiling (script ≈ 10 µs isolated). Pipelining raises the per-connection ceiling; beyond that, shard tenants over several Redis instances (a tenant's keys share a hash tag, so a tenant maps to one shard).
 - Gateway instances scale horizontally; they share nothing but Redis.
